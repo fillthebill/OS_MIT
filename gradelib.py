@@ -345,12 +345,12 @@ QEMU appears to already be running.  Please exit it if possible or use
             self.proc.terminate()
 
 class GDBClient(object):
-    def __init__(self, port, timeout=15):
+    def __init__(self, port, timeout=45):
         start = time.time()
         while True:
             self.sock = socket.socket()
             try:
-                self.sock.settimeout(1)
+                self.sock.settimeout(2)
                 self.sock.connect(("localhost", port))
                 break
             except socket.error:

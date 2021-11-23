@@ -2698,7 +2698,7 @@ main(int argc, char *argv[])
     {reparent2, "reparent2"},
     {pgbug, "pgbug" },
     {sbrkbugs, "sbrkbugs" },
-    // {badwrite, "badwrite" },
+     {badwrite, "badwrite" },
     {badarg, "badarg" },
     {reparent, "reparent" },
     {twochildren, "twochildren"},
@@ -2722,6 +2722,7 @@ main(int argc, char *argv[])
     {kernmem, "kernmem"},
     {sbrkfail, "sbrkfail"},
     {sbrkarg, "sbrkarg"},
+   
     {validatetest, "validatetest"},
     {stacktest, "stacktest"},
     {opentest, "opentest"},
@@ -2791,4 +2792,5 @@ main(int argc, char *argv[])
     printf("ALL TESTS PASSED\n");
     exit(0);
   }
+  
 }
