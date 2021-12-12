@@ -9,6 +9,11 @@
 #include "riscv.h"
 #include "defs.h"
 
+
+extern int pg_refcount[];
+
+int init = 1;
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -37,6 +42,7 @@ freerange(void *pa_start, void *pa_end)
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
+  init = 0;
 }
 
 // Free the page of physical memory pointed at by v,
@@ -50,10 +56,15 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
+  if(init == 0) {
+	
+        pg_refcount[(uint64)pa/PGSIZE]-=1;
+	if(pg_refcount[(uint64)pa/PGSIZE] > 0) {
+	  return; // do not free it physically.
+	}
+  }
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
-
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
@@ -72,8 +83,14 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    int temp = pg_refcount[(uint64)r/PGSIZE];
+    if(temp != 0) {
+   //printf("not equal to zero, is %d\n", temp);
+}
+    pg_refcount[(uint64)r/PGSIZE]+=1;
+  }
   release(&kmem.lock);
 
   if(r)

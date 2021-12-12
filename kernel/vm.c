@@ -5,6 +5,10 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
+int pg_refcount[PHYSTOP/PGSIZE];
 
 /*
  * the kernel's page table.
@@ -299,6 +303,50 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+
+
+int
+cowfork_handler(uint64 va, pagetable_t pagetable ) {
+	//va is r_stval();
+  va = PGROUNDDOWN(va);
+  pte_t* pte = walk(pagetable, va, 0);
+  uint64 pa = PTE2PA(*pte);
+  if( va >= MAXVA) {
+	return -1;
+} if(pte == 0) {
+	return -1;
+} if((*pte & PTE_U) ==0||(*pte & PTE_V) == 0 ||(*pte & PTE_COWF)==0) {
+	return -1;
+}
+
+
+   int count = pg_refcount[pa/PGSIZE];
+
+  if(count <= 0) {
+//	printf("ref_count less than zero, is %d", count);
+	panic("refcount less than zero");
+  }else if(count == 1) {
+	(*pte) |= PTE_W;
+	(*pte) &= ~PTE_COWF;
+  }else {
+	//allocate a page, and remap to it
+     char* mem = kalloc();
+	if((uint64)mem == 0) {
+//	printf("alloc failed\n");
+  	return -1;
+   }
+     pg_refcount[pa/PGSIZE] -= 1;
+    
+     memmove((void*)mem, (void*)pa, PGSIZE);
+     int flag = PTE_FLAGS(*pte);
+     flag |= PTE_W;
+     flag &= ~(PTE_COWF);
+     *pte = PA2PTE((uint64)mem)|PTE_V|flag;
+  }
+  return 0;
+
+}
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -311,28 +359,29 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    
     pa = PTE2PA(*pte);
+    (*pte) |= PTE_COWF;//add the cowfork bit.
+    (*pte) &= ~(PTE_W);//put off the write bit;
+     
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+   // if((mem = kalloc()) == 0)
+   //   goto err;
+   // memmove(mem, (char*)pa, PGSIZE);
+    pg_refcount[pa/PGSIZE] += 1;
+    mappages(new, i, PGSIZE, pa, flags);
+    //  kfree(mem);
+     // goto err;
+
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -361,7 +410,16 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
-    n = PGSIZE - (dstva - va0);
+    pte_t* pte = walk(pagetable,va0, 0); 
+    if( (*pte & PTE_W) == 0) {
+	if( cowfork_handler(va0, pagetable) < 0) {
+		struct proc *p = myproc();
+		p->killed = 1;
+	}
+}    
+
+    pa0 = walkaddr(pagetable, va0);
+n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
