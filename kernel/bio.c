@@ -23,14 +23,32 @@
 #include "fs.h"
 #include "buf.h"
 
+// lab8: task buffer cache
+// using hashing to increase throughput
+// Design:
+// design 13 hash buckets, ensuring that block hashed to the same number would be found on the same bucket.
+// the problem arises when redesign beget.
+// 1. when a buffer cache miss is encountered, before find LRU buffer in other bucket, we have to unlock the current bucket, unless a deadlock would happen.
+// 2. after releasing the lock, before appending the previous bucket with LRU buffer cache, the previous buffer could be already appended with the same block, which breaks the invariant that only one buffe cache for each block.
+// sulution to 2: after releasing the lock, grab a global LRU seeking lock.
+// only thread taking such a lock could find lRU cache and append it.
+// thus saving the invariant just mentioned.
+
+// step1. init these buckets.
+// step2. redesing buf:sigle linked list is enough, add timestamp field.
+// step3. redesign bget
+// step4. redesign berelse.
+
 struct {
-  struct spinlock lock;
+  struct spinlock LRUseek;
   struct buf buf[NBUF];
 
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+  struct buf heads[13];
+  struct spinlock bucket[13];
+
 } bcache;
 
 void
