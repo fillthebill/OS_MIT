@@ -22,12 +22,12 @@
 #include "defs.h"
 #include "fs.h"
 #include "buf.h"
-
+#include "limits.h"
 // lab8: task buffer cache
 // using hashing to increase throughput
 // Design:
-// design 13 hash buckets, ensuring that block hashed to the same number would be found on the same bucket.
-// the problem arises when redesign beget.
+// implement 13 hash buckets, ensuring that block hashed to the same number would be found on the same bucket.
+// the problem arises when redesigning beget.
 // 1. when a buffer cache miss is encountered, before find LRU buffer in other bucket, we have to unlock the current bucket, unless a deadlock would happen.
 // 2. after releasing the lock, before appending the previous bucket with LRU buffer cache, the previous buffer could be already appended with the same block, which breaks the invariant that only one buffe cache for each block.
 // sulution to 2: after releasing the lock, grab a global LRU seeking lock.
@@ -35,7 +35,7 @@
 // thus saving the invariant just mentioned.
 
 // step1. init these buckets.
-// step2. redesing buf:sigle linked list is enough, add timestamp field.
+// step2. redesing buf: add timestamp field.
 // step3. redesign bget
 // step4. redesign berelse.
 
@@ -54,20 +54,26 @@ struct {
 void
 binit(void)
 {
-  struct buf *b;
 
-  initlock(&bcache.lock, "bcache");
-
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+  initlock(&bcache.LRUseek, "bcache-LRUseek");
+   
+  for(int i = 0; i < 13; i++) {
+    bcache.heads[i].prev = &bcache.heads[i];
+    bcache.heads[i].next = &bcache.heads[i];
+    initlock(&bcache.bucket[i], "bcache-bucket");
   }
+
+  for(int i = 0; i < NBUF; i++) {
+    initsleeplock(&bcache.buf[i].lock, "buf");
+    int t = i%13;  // add the current buf in bucket t;
+    bcache.buf[i].prev = bcache.heads[t].prev;
+    bcache.buf[i].next = &bcache.heads[t];
+    bcache.heads[t].prev->next = &bcache.buf[i];
+    bcache.heads[t].prev = &bcache.buf[i];
+    bcache.buf[i].timestamp = ticks;
+    
+  }
+
 }
 
 // Look through buffer cache for block on device dev.
@@ -76,34 +82,108 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  struct buf *b;
 
-  acquire(&bcache.lock);
+// hash to a certain bucket.
+  int t = (dev + blockno)%13;
+  acquire(&bcache.bucket[t]);
 
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+// search in the current bucket
+  struct buf* cur_buf = bcache.heads[t].next;
+
+  do {
+    if(cur_buf->dev == dev && cur_buf->blockno == blockno) {
+      cur_buf->refcnt++;
+      release(&bcache.bucket[t]);
+      acquiresleep(&cur_buf->lock);
+      return cur_buf;	  
+    }else {
+      cur_buf = cur_buf->next;
     }
+
+  }while(cur_buf != &bcache.heads[t]);
+
+// matching cache not found, try to seek in other bucket;
+// search in the previous bucket again, since it may have changed
+// during our acquisition of the global spinclock LRUseek  
+  release(&bcache.bucket[t]);
+  acquire(&bcache.LRUseek);
+  acquire(&bcache.bucket[t]);
+  cur_buf = bcache.heads[t].next;
+  
+  do {
+    if(cur_buf->dev == dev && cur_buf->blockno == blockno) {
+      cur_buf->refcnt++;
+      release(&bcache.bucket[t]);
+      release(&bcache.LRUseek);
+      acquiresleep(&cur_buf->lock);
+      return cur_buf;
+    }else {
+      cur_buf = cur_buf->next;
+    }
+  }while(cur_buf != &bcache.heads[t]);
+
+// still not found in the previous bucket, envict the LRU buffer cache among all buffer cache.
+  release(&bcache.bucket[t]);
+
+// invariance: during the whole process of seeking LRU and restructuring bucket,the LRU seek global lock is hold.
+  uint min = INT_MAX;
+  uint prevLRUbucket = 14;// if found, it should be < 13
+  struct buf* cur;
+  struct buf* saved = &bcache.heads[t];
+
+  for(int i = 0; i < 13; i++) {
+
+    cur = bcache.heads[i].next;
+    acquire(&bcache.bucket[i]); // avoid reaquisition of same lock // changed.
+
+    do{
+      if(cur->refcnt == 0 && cur->timestamp < min) {
+        min = cur->timestamp;
+        if(prevLRUbucket != i && prevLRUbucket < 14) {
+	  release(&bcache.bucket[prevLRUbucket]);
+	}
+        prevLRUbucket = i;
+	saved = cur;
+      }
+      cur = cur->next;
+    }while(cur != &bcache.heads[i]);
+
+    //invariance: the lock on the bucket where the currently LRU cache is found is kept.
+    if(prevLRUbucket != i) { // if LRU found in current buck, do not release.
+      release(&bcache.bucket[i]);
+    }
+
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
+// whether a free buffer cache has been found
+  if(prevLRUbucket == 14) {
+    panic("not enough free cache");
   }
-  panic("bget: no buffers");
+
+// steal a buffer from other bucket; 
+
+// off the original bucket.
+   saved->next->prev = saved->prev;
+   saved->prev->next = saved->next;
+   release(&bcache.bucket[prevLRUbucket]);
+
+// on the end of new bucket;
+// remember to acquire the lock
+   acquire(&bcache.bucket[t]);
+   bcache.heads[t].prev->next = saved;
+   saved->prev = bcache.heads[t].prev;   
+   bcache.heads[t].prev = saved;
+   saved->next = &bcache.heads[t];
+  
+   saved->dev = dev;
+   saved->blockno = blockno;
+   saved->refcnt = 1;
+   saved->valid = 0;
+   saved->timestamp = ticks;
+   release(&bcache.bucket[t]); 
+  release(&bcache.LRUseek);
+   acquiresleep(&saved->lock);
+   return saved;
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -139,33 +219,24 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  acquire(&bcache.bucket[(b->dev + b->blockno)%13]);
   b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
-  }
-  
-  release(&bcache.lock);
+  if(b->refcnt == 0)  b->timestamp = ticks;
+  release(&bcache.bucket[(b->dev + b->blockno)%13]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  acquire(&bcache.bucket[(b->dev + b->blockno)%13]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bcache.bucket[(b->dev + b->blockno)%13]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  acquire(&bcache.bucket[(b->dev + b->blockno)%13]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bcache.bucket[(b->dev + b->blockno)%13]);
 }
 
 

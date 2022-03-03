@@ -96,18 +96,23 @@ test0()
   printf("start test0\n");
   for(int i = 0; i < NCHILD; i++){
     dir[0] = '0' + i;
+//    printf("try to mkdir\n");
     mkdir(dir);
     if (chdir(dir) < 0) {
       printf("chdir failed\n");
       exit(1);
     }
+    
+  //  printf("try to unlink\n");
     unlink(file);
+  //  printf("try to createf\n");
     createfile(file, N);
     if (chdir("..") < 0) {
       printf("chdir failed\n");
       exit(1);
     }
   }
+ // printf("step1 \n");
   m = ntas(0);
   for(int i = 0; i < NCHILD; i++){
     dir[0] = '0' + i;
@@ -128,6 +133,7 @@ test0()
     }
   }
 
+ // printf("step2\n");
   for(int i = 0; i < NCHILD; i++){
     wait(0);
   }
@@ -156,6 +162,8 @@ void test1()
       createfile(file, 1);
     }
   }
+  
+    printf("step1 \n");
   for(int i = 0; i < NCHILD; i++){
     file[1] = '0' + i;
     int pid = fork();
@@ -180,6 +188,7 @@ void test1()
     }
   }
 
+   // printf("step 2\n");
   for(int i = 0; i < NCHILD; i++){
     wait(0);
   }
