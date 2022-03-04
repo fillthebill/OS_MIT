@@ -120,6 +120,9 @@ exec(char *path, char **argv)
 	  printf("page table %p\n",p->pagetable);	  
 	  vmprint(p->pagetable,0);
   }
+  
+  ukvmmapusr(p->kpagetable, p->pagetable, p->sz, 0);
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

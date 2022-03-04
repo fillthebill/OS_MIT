@@ -121,6 +121,9 @@ found:
     return 0;
   }
 
+
+  // set up the kernel pagtable for process, part 2 of lab pgtbl.
+  p->kpagetable = ukpgtblcreate();
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -142,6 +145,12 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  
+  if(p->kpagetable) {
+    ukvmfree(p->kpagetable); 
+  }
+  p->kpagetable = 0;
+
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -230,6 +239,10 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+
+  // map user space to kernel pgbl
+  ukvmmapusr(p->kpagetable, p->pagetable, p->sz, 0);
+
   release(&p->lock);
 }
 
@@ -249,7 +262,11 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+
+  ukvmmapusr(p->kpagetable, p->pagetable, sz, p->sz);
   p->sz = sz;
+
+  
   return 0;
 }
 
@@ -295,6 +312,7 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  ukvmmapusr(np->kpagetable, np->pagetable, np->sz, 0);
   release(&np->lock);
 
   return pid;
@@ -473,12 +491,17 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        
+	// switch to kernel pgtbl for process p.
+	w_satp(MAKE_SATP(p->kpagetable));
+	sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
+	kvminithart();
         found = 1;
       }
       release(&p->lock);

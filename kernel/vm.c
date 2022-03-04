@@ -141,6 +141,83 @@ kvmpa(uint64 va)
   return pa+off;
 }
 
+
+// a wrapper for mappage.
+void
+ukvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+
+  if(mappages(pagetable, va, sz, pa, perm)!=0) panic("ukvmmap");
+  // order mistaken here.... 
+}
+
+// create a pagetable for user proccess to use in the kernel,
+// the user space would be further mapped into it, not now, for copyinnew
+// which is part 3 of the current lab.
+pagetable_t
+ukpgtblcreate() {
+
+  pagetable_t pagetable;
+  int i;
+
+  pagetable = uvmcreate();
+
+// just copy the kernelpgtbl!! solute to prof k.
+// start from 1, see the memlayout. 1Gb per 2level entry.
+
+  for(i = 1; i < 512; i++) {
+    pagetable[i] = kernel_pagetable[i];
+  }
+
+// mapping the mem in the first GB.  R, W allowed
+  ukvmmap(pagetable, PLIC, PLIC, 0x400000, PTE_R|PTE_W);
+  ukvmmap(pagetable, CLINT, CLINT, 0x10000, PTE_R|PTE_W);
+  ukvmmap(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R|PTE_W);
+  ukvmmap(pagetable, UART0, UART0, PGSIZE, PTE_R|PTE_W);
+
+  return pagetable;
+}
+
+void
+ukvmfree(pagetable_t pgtbl) {
+  pte_t pte = pgtbl[0];   // other entries do not need to free here.
+  pagetable_t l1 = (pagetable_t) PTE2PA(pte);
+  pte_t l1pte = l1[0];
+
+  for(int i = 0; i < 512; i++) {
+    l1pte = l1[i]; 
+    if(l1pte & PTE_V) {
+      uint64 l2 = PTE2PA(l1pte);
+      kfree((void*) l2);
+      l1[i] = 0;
+    }
+  }
+
+  kfree((void*) l1);
+  kfree((void*) pgtbl);
+}
+
+
+void 
+ukvmmapusr(pagetable_t kernel, pagetable_t user, uint64 new, uint64 old) {
+
+  if(new >= PLIC) panic("new sz out of range!");
+
+uint64 va;
+pte_t *upte;
+pte_t *kpte;
+
+  for(va = old; va < new; va+=PGSIZE) {
+    upte = walk(user, va, 0);
+    kpte = walk(kernel, va, 1);
+    *kpte = *upte;
+
+// access priviledge: only read.
+   *kpte &= ~(PTE_U | PTE_X | PTE_W);
+  }
+
+}
+
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
@@ -157,7 +234,11 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
     if(*pte & PTE_V)
-      panic("remap");
+     // panic("remap");
+    {
+	printf("%x va \n ", va);
+	panic("remap");
+}
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -379,6 +460,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+
+  return copyin_new(pagetable, dst, srcva, len);
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -405,6 +488,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+
+  return copyinstr_new(pagetable, dst, srcva, max);
   uint64 n, va0, pa0;
   int got_null = 0;
 
